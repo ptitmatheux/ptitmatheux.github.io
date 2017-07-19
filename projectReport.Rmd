@@ -1,0 +1,108 @@
+---
+title: "Human Activity Recognition analysis"
+author: "ptitmatheux"
+date: "July 19, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+
+We train a random forest model on the dataset provided by http://groupware.les.inf.puc-rio.br/har in order to predict if a physical exercise (namely the Unilateral Dumbbell Biceps Curl) was performed correctly or not knowing the measurements provided by a panel of four devices weared by the person performing the exercise. We perform a Principal Component Analysis as feature extraction in the preprocessing step which reduces the number of predictors 18. The results obtained on a separate testing set exhibit an overall "out of sample" estimated accuracy of 97\%.
+
+## Exploring and preparing the data
+
+After loading the data, we remove columns containing essentially NA or empty values. These columns seem to correspond to agregated features; we shall disregard them in the present analysis and keep only the raw measurements. We can do this as follows:
+
+```{r}
+modeling <- read.csv("data/pml-training.csv")
+predicting <- read.csv("data/pml-testing.csv")
+
+# checking for NA and empty values:
+check.NA.model <- apply(modeling, MARGIN=2, FUN=function(COL) { sum(is.na(COL)) })
+print(table(check.NA.model))
+check.empty.model <- apply(modeling, MARGIN=2, FUN=function(COL) { sum(COL == "") })
+print(table(check.empty.model))
+# removing those columns from modeling set:
+modeling <- subset(modeling, select=names(which(check.empty.model == 0))) # this removes also the NA values
+```
+```{r, echo=FALSE}
+check.NA.pred <- apply(predicting, MARGIN=2, FUN=function(COL) { sum(is.na(COL)) })
+print(table(check.NA.pred))
+check.empty.pred <- apply(predicting, MARGIN=2, FUN=function(COL) { sum(COL == "") })
+print(table(check.empty.pred))
+# removing those columns from testing set:
+predicting <- subset(predicting, select=names(which(check.empty.pred == 0))) # this removes also the NA values
+
+```
+
+As we see, in the modeling data set, there are 67 columns which are essentially (97\% of the rows) filled with 'NA', and 33 which are empty (empty string "" in the csv). We perform a similar treatment with the predicting dataset (code not shown). 
+
+Let us have a look at some data by considering raw measurements recorded on the user "Carlitos"; for example, the variable "pitch_belt":
+
+```{r}
+library(ggplot2)
+CHECK <- modeling[modeling$user_name == "carlitos",]
+qq <- qplot(raw_timestamp_part_1, pitch_belt, colour=classe, data=CHECK)
+qq
+```
+
+There are approximately 20 records by second. As we shall see, the dispersion of the records during a given 1-second-long window can be quite noisy. In a finer tuning of the model, we could perform a tailored summarizing feature extraction such as taking the mean, variance, range, etc. on sliding windows of fixed width in order to reduce the noise. However, as a first approach and for simplicity, we shall keep the raw measurements so far.  
+
+Before turning to the training of the model, we remove variables related with the user and the timestamps, as well as the very first indexing variable (which is very strongly but artificially correlated  with the output variable). Note that by removing all references to time, we implicitly perform the assumption that the variables are not significantly autocorrelated in time. This is certainly not completely true, but hopefully this assumption won't have a too bad impact on our model performance. 
+
+```{r}
+submodeling <- subset(modeling, select=-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+subpredicting <- subset(predicting, select=-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+```
+
+## Splitting the data for train and testing 
+
+We now split the data from the first dataset (submodeling) into a training and a test set using a random sampling which equally dispatches the values of the output variable; we keep 40\% of the data for testing while the remaining will be used for training:
+
+```{r}
+library(caret)
+set.seed(1234)
+trainIndex = createDataPartition(submodeling$classe, p = 0.6)[[1]]
+training = submodeling[trainIndex,]
+testing = submodeling[-trainIndex,]
+```
+
+## Preprocessing
+
+As the number of raw input variables is quite large (52), we perform a feature selection using a Principal Component Analysis in which we set the threshold for explained variance set at 90\%. This reduces the number of input variables to 18. (This step will be performed computationally in the next section.)
+
+## Model selection and training
+
+In our case, we face with a classification problem in which the output variable can take 5 different levels. Due to the noisy nature of the data, we shall consider a random forest model with bootstrap resampling (we leave the default boostrap settings, i.e., 25 repetitions). In order to speed up the computation, we shall take advantage of the parallelization facilities provided by R:
+
+```{r, eval=T}
+library(doMC)
+registerDoMC(cores=4)
+
+fit.rf <- train(classe ~ ., method="rf",
+                preProcess="pca",
+                trControl=trainControl(preProcOptions = list(thresh=0.9)),
+                data=training)
+```
+
+N.B. The preprocessing step using PCA is performed in the previous command, just before training the random forest.
+
+## Model assessment
+
+We now can test our model by performing a prediction on the testing set, then comaring with the true values:
+
+```{r, eval=T}
+test.rf <- predict(fit.rf, testing)
+confMat <- confusionMatrix(test.rf, testing$classe)
+print(confMat)
+```
+
+As we can see, we obtain an overall "out of sample" accuracy of 97\%, which seems a good result. The respective accuracies by output classes are 99\% for class A, 96\% for class B, 96\% for class C, 94\% for class D and 98\% for class E. 
+
+
